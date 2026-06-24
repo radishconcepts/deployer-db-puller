@@ -13,6 +13,11 @@ use Radishconcepts\Deployer\Wp\SanitizeMode;
 use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Question\ChoiceQuestion;
 
+// Deployer runs tasks in worker subprocesses that don't always have the consuming project's
+// Composer PSR-4 mapping for this package registered, so load our classes explicitly here.
+require_once __DIR__ . '/src/SanitizeMode.php';
+require_once __DIR__ . '/src/Sanitizer.php';
+
 // WP-CLI binary on the remote hosts (Hypernode/our servers expose `wp` globally).
 set( 'bin/wp', 'wp' );
 
