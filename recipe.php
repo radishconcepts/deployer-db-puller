@@ -19,6 +19,17 @@ use function Laravel\Prompts\multiselect;
 require_once __DIR__ . '/src/SanitizeMode.php';
 require_once __DIR__ . '/src/Sanitizer.php';
 
+// laravel/prompts ships multiselect() et al. via Composer's "files" autoload. Deployer worker
+// subprocesses register the class autoloader but don't run those file includes, so the helper
+// functions go missing ("Call to undefined function Laravel\Prompts\multiselect"). The classes
+// themselves DO autoload, so ask one of them where it lives and load the sibling helpers.php.
+if ( ! function_exists( 'Laravel\Prompts\multiselect' ) && class_exists( \Laravel\Prompts\Prompt::class ) ) {
+	$prompts_helpers = dirname( ( new \ReflectionClass( \Laravel\Prompts\Prompt::class ) )->getFileName() ) . '/helpers.php';
+	if ( is_file( $prompts_helpers ) ) {
+		require_once $prompts_helpers;
+	}
+}
+
 // WP-CLI binary on the remote hosts (Hypernode/our servers expose `wp` globally).
 set( 'bin/wp', 'wp' );
 
