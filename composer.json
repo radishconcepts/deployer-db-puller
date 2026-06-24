@@ -1,0 +1,24 @@
+{
+    "name": "radishconcepts/deployer-db-puller",
+    "description": "Deployer task to pull a remote WordPress database into the local environment and strip personal data, so non-production copies stay GDPR-safe.",
+    "type": "library",
+    "license": "proprietary",
+    "authors": [
+        {
+            "name": "Radish Concepts",
+            "email": "support@radishconcepts.com"
+        }
+    ],
+    "require": {
+        "php": "^8.1",
+        "deployer/deployer": "^7.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Radishconcepts\\Deployer\\Wp\\": "src/"
+        }
+    },
+    "config": {
+        "sort-packages": true
+    }
+}
