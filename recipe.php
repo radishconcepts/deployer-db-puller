@@ -29,6 +29,11 @@ set( 'local/wp', 'wp' );
 set( 'db_dump/remote', '{{current_path}}/db-pull-{{hostname}}.sql.gz' );
 set( 'db_dump/local', 'tmp/db-pull.sql.gz' );
 
+// Charset forced on both the export (mysqldump) and import (mysql) connections. utf8mb4 prevents
+// "Duplicate entry '?'" errors where multibyte values (e.g. SearchWP tokens) get mangled to '?' by
+// a latin1 connection and then collide on a unique key. Set '' to skip the flag entirely.
+set( 'db/charset', 'utf8mb4' );
+
 // Users that must NOT be anonymized (so you can still log in locally). Each entry may be:
 // a full e-mail (floris@radishconcepts.com), an @domain (@radishconcepts.com), or a numeric ID (1).
 // Their original password hash is kept; use `wp user update` locally if you need to set one.
@@ -87,12 +92,15 @@ task( 'pull:db', function () {
 	$isMultisite = trim( (string) runLocally( "$localWp config get MULTISITE || true" ) ) !== '';
 	$networkFlag = $isMultisite ? ' --network' : '';
 
+	$charset     = trim( (string) get( 'db/charset' ) );
+	$charsetFlag = $charset !== '' ? ' --default-character-set=' . escapeshellarg( $charset ) : '';
+
 	if ( $dryRun ) {
 		writeln( '' );
 		writeln( '<info>DRY RUN</info> - no changes will be made. Planned steps:' );
-		writeln( "  1. Export on '$source':  {{bin/wp}} db export - | gzip > {{db_dump/remote}}" );
+		writeln( "  1. Export on '$source':  {{bin/wp}} db export -$charsetFlag | gzip > {{db_dump/remote}}" );
 		writeln( "  2. Download dump to:     {{db_dump/local}}" );
-		writeln( "  3. Import locally:       $localWp db import" );
+		writeln( "  3. Import locally:       $localWp db import -$charsetFlag" );
 		writeln( "  4. Search-replace:       $fromUrl -> $toUrl --all-tables$networkFlag" );
 		writeln( "  5. Sanitize (mode: {$mode->value}): " . ( $categories === [] ? 'nothing' : implode( ', ', $categories ) ) );
 		writeln( '     Keep users matching:  ' . implode( ', ', $keepUsers ) );
@@ -109,7 +117,7 @@ task( 'pull:db', function () {
 	try {
 		// 1. Export + gzip on the source host.
 		writeln( ' - Exporting remote database' );
-		run( "cd {{current_path}} && {{bin/wp}} db export - | gzip > $remoteDump" );
+		run( "cd {{current_path}} && {{bin/wp}} db export -$charsetFlag | gzip > $remoteDump" );
 
 		// 2. Download the dump to the local tmp dir (rsync won't create the target dir itself).
 		writeln( ' - Downloading dump' );
@@ -122,7 +130,7 @@ task( 'pull:db', function () {
 
 	// 4. Import into the local database.
 	writeln( ' - Importing into local database' );
-	runLocally( "gunzip -c $localDump | $localWp db import -" );
+	runLocally( "gunzip -c $localDump | $localWp db import -$charsetFlag" );
 	runLocally( "rm -f $localDump" );
 
 	// 5. Search-replace the URLs (works for single-site and multisite).
