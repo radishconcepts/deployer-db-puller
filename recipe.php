@@ -102,6 +102,11 @@ task( 'pull:db', function () {
 		writeln( "  2. Download dump to:     {{db_dump/local}}" );
 		writeln( "  3. Import locally:       $localWp db import -$charsetFlag" );
 		writeln( "  4. Search-replace:       $fromUrl -> $toUrl --all-tables$networkFlag" );
+		if ( $isMultisite ) {
+			$fromHost = (string) parse_url( $fromUrl, PHP_URL_HOST );
+			$toHost   = (string) parse_url( $toUrl, PHP_URL_HOST );
+			writeln( "                           + host $fromHost -> $toHost (multisite wp_site/wp_blogs)" );
+		}
 		writeln( "  5. Sanitize (mode: {$mode->value}): " . ( $categories === [] ? 'nothing' : implode( ', ', $categories ) ) );
 		writeln( '     Keep users matching:  ' . implode( ', ', $keepUsers ) );
 		writeln( '' );
@@ -135,9 +140,22 @@ task( 'pull:db', function () {
 
 	// 5. Search-replace the URLs (works for single-site and multisite).
 	writeln( ' - Replacing URLs' );
-	if ( $fromUrl !== '' && $toUrl !== '' && $fromUrl !== $toUrl ) {
-		runLocally( "$localWp search-replace " . escapeshellarg( $fromUrl ) . ' ' . escapeshellarg( $toUrl )
+	$replace = function ( string $from, string $to ) use ( $localWp, $networkFlag ): void {
+		if ( $from === '' || $to === '' || $from === $to ) {
+			return;
+		}
+		runLocally( "$localWp search-replace " . escapeshellarg( $from ) . ' ' . escapeshellarg( $to )
 			. " --all-tables --skip-columns=guid --report-changed-only$networkFlag" );
+	};
+
+	$replace( $fromUrl, $toUrl );
+
+	// On multisite the wp_site/wp_blogs tables store the bare host (no scheme), so the URL replace
+	// above doesn't touch them and DOMAIN_CURRENT_SITE no longer matches a site (later wp commands
+	// can't bootstrap). Map the bare host too. NOTE: this assumes all blogs share one host
+	// (subdirectory multisite). Subdomain networks need a per-blog replace (not handled here).
+	if ( $isMultisite ) {
+		$replace( (string) parse_url( $fromUrl, PHP_URL_HOST ), (string) parse_url( $toUrl, PHP_URL_HOST ) );
 	}
 
 	// 6. Sanitize personal data per chosen category.
