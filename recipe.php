@@ -129,14 +129,13 @@ task( 'pull:db', function () {
 task( 'pull:db' )->limit( 1 );
 
 /**
- * Ask which data categories to sanitize. Default (and safest) is to sanitize everything; only when
- * the user declines do we show a multiselect to pick a subset.
+ * Ask which data categories to sanitize. All are pre-selected; type comma-separated numbers to
+ * deselect (keep) those, blank keeps everything selected.
  *
- * Both prompts use Deployer's askConfirmation()/askChoice(), NOT a raw QuestionHelper->ask(). In a
- * Deployer worker those native helpers proxy the prompt to the master's TTY (see isWorker() branch
- * in functions.php); a raw ask() does not block in a worker and silently returns its default.
- * askChoice() also can't pre-select everything (its default must be a single key), which is the
- * other reason for the confirm-then-pick flow.
+ * Built on Deployer's free-text ask(), NOT a raw QuestionHelper->ask(): in a Deployer worker, ask()
+ * proxies the prompt to the master's TTY and blocks (see the isWorker() branch in functions.php),
+ * whereas a raw ask() returns its default immediately. askChoice()'s default must be a single key,
+ * so it can't pre-select everything; building the list ourselves keeps the "blank = all" default.
  *
  * @return list<string>
  */
@@ -147,14 +146,34 @@ function pull_db_ask_categories(): array
 		return [];
 	}
 
-	if ( askConfirmation( 'Sanitize all data categories (' . implode( ', ', $choices ) . ')?', true ) ) {
+	$lines = [ 'Which data should be sanitized? (all selected by default)' ];
+	foreach ( $choices as $i => $slug ) {
+		$lines[] = sprintf( '  [%d] %s', $i, $slug );
+	}
+	$lines[] = 'Comma-separated numbers to deselect, blank = all';
+
+	$answer = ask( implode( "\n", $lines ), null );
+	if ( $answer === null || trim( $answer ) === '' ) {
 		return $choices;
 	}
 
-	// User wants a subset: pick the categories to sanitize (type comma-separated numbers).
-	$selected = askChoice( 'Which categories should be sanitized?', $choices, null, true );
+	// Collect the indexes to deselect (digits only; ignore stray tokens).
+	$deselect = [];
+	foreach ( explode( ',', $answer ) as $token ) {
+		$token = trim( $token );
+		if ( $token !== '' && ctype_digit( $token ) ) {
+			$deselect[] = (int) $token;
+		}
+	}
 
-	return array_values( (array) $selected );
+	$kept = [];
+	foreach ( $choices as $i => $slug ) {
+		if ( ! in_array( $i, $deselect, true ) ) {
+			$kept[] = $slug;
+		}
+	}
+
+	return $kept;
 }
 
 /** Resolve the sanitize mode: honor --mode, otherwise ask (only when a mode-sensitive category is chosen). */
