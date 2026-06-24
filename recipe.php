@@ -11,7 +11,8 @@ namespace Deployer;
 use Radishconcepts\Deployer\Wp\Sanitizer;
 use Radishconcepts\Deployer\Wp\SanitizeMode;
 use Symfony\Component\Console\Input\InputOption;
-use Symfony\Component\Console\Question\ChoiceQuestion;
+
+use function Laravel\Prompts\multiselect;
 
 // Deployer runs tasks in worker subprocesses that don't always have the consuming project's
 // Composer PSR-4 mapping for this package registered, so load our classes explicitly here.
@@ -128,22 +129,44 @@ task( 'pull:db', function () {
 // This task orchestrates the source host and local commands itself; do not run it implicitly on all hosts.
 task( 'pull:db' )->limit( 1 );
 
+/** Human-readable labels for the built-in categories; unknown slugs fall back to the slug itself. */
+const PULL_DB_CATEGORY_LABELS = [
+	'gf'          => 'Gravity Forms entries',
+	'users'       => 'Users',
+	'comments'    => 'Comments',
+	'woocommerce' => 'WooCommerce orders & customers',
+	'pronamic'    => 'Pronamic payments',
+];
+
 /**
- * Ask which data categories to sanitize. All are pre-selected; the user deselects to keep data.
+ * Ask which data categories to sanitize, as an interactive checklist (all ticked by default).
+ * Use the arrow keys to move, space to toggle a tick, enter to confirm. Untick to keep that data.
+ *
+ * In non-interactive runs (e.g. `-n` / CI) the prompt is skipped and every category is sanitized.
  *
  * @return list<string>
  */
 function pull_db_ask_categories(): array
 {
-	$choices  = array_values( (array) get( 'sanitize/categories' ) );
-	$question = new ChoiceQuestion(
-		'Which data should be sanitized? Comma-separated numbers to deselect, blank = all',
-		$choices,
-		implode( ',', array_keys( $choices ) ) // default: everything selected
-	);
-	$question->setMultiselect( true );
+	$choices = array_values( (array) get( 'sanitize/categories' ) );
 
-	return Deployer::get()->getHelper( 'question' )->ask( input(), output(), $question );
+	// No TTY to draw checkboxes on: keep the safe default of sanitizing everything.
+	if ( ! input()->isInteractive() ) {
+		return $choices;
+	}
+
+	$options = [];
+	foreach ( $choices as $slug ) {
+		$options[ $slug ] = PULL_DB_CATEGORY_LABELS[ $slug ] ?? $slug;
+	}
+
+	// Returns the selected slugs (the option keys); defaults to every slug ticked.
+	return array_values( multiselect(
+		label: 'Which data should be sanitized?',
+		options: $options,
+		default: array_keys( $options ),
+		hint: 'Space toggles a tick, enter confirms. Untick to keep that data.',
+	) );
 }
 
 /** Resolve the sanitize mode: honor --mode, otherwise ask (only when a mode-sensitive category is chosen). */
