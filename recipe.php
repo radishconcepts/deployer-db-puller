@@ -24,11 +24,14 @@ require_once __DIR__ . '/src/Sanitizer.php';
 // Laravel\Prompts\multiselect"). Load the consumer's autoloader explicitly (idempotent: Composer
 // guards against re-registering), which restores both the PSR-4 classes and the files helpers.
 if ( ! function_exists( 'Laravel\Prompts\multiselect' ) ) {
-	// This package lives at <consumer>/vendor/radishconcepts/deployer-db-puller, so the consumer's
-	// autoloader sits three directories up. Absent when developing this package in isolation.
-	$consumer_autoload = __DIR__ . '/../../../autoload.php';
-	if ( is_file( $consumer_autoload ) ) {
-		require_once $consumer_autoload;
+	// Installed it lives at <consumer>/vendor/radishconcepts/deployer-db-puller, so the consumer's
+	// autoloader is two directories up; the deeper path covers a standalone checkout with its own
+	// vendor/. First match wins; absent when developing this package without any vendor/ at all.
+	foreach ( [ __DIR__ . '/../../autoload.php', __DIR__ . '/vendor/autoload.php' ] as $consumer_autoload ) {
+		if ( is_file( $consumer_autoload ) ) {
+			require_once $consumer_autoload;
+			break;
+		}
 	}
 }
 
