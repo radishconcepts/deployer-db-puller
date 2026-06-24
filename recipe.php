@@ -37,6 +37,15 @@ set( 'sanitize/keep_users', [ '@radishconcepts.com' ] );
 // Data categories offered in the interactive checklist (all pre-selected).
 set( 'sanitize/categories', [ 'gf', 'users', 'comments', 'woocommerce', 'pronamic' ] );
 
+// Explicit local site URL. Leave empty to auto-detect (DB, then wp-config files). Set this when
+// auto-detection can't find it, e.g. `set( 'local/url', 'https://example.test' );`.
+set( 'local/url', '' );
+
+// Local wp-config files scanned for the site URL when the local DB is empty (wp option get home
+// returns nothing). Constants are read in order: WP_HOME, WP_SITEURL, then DOMAIN_CURRENT_SITE
+// (multisite, scheme prepended). wp-cli's `config get` doesn't follow includes, hence we parse.
+set( 'local/config_files', [ 'app/www/wp-config-local.php', 'app/www/wp-config.php', 'wp-config-local.php', 'wp-config.php' ] );
+
 option( 'dry-run', null, InputOption::VALUE_NONE, 'Show what pull:db would do, without changing anything' );
 option( 'mode', null, InputOption::VALUE_REQUIRED, 'Sanitize mode: delete|anonymize (skips the prompt when set)' );
 
@@ -61,11 +70,19 @@ task( 'pull:db', function () {
 	$localDump  = parse( '{{db_dump/local}}' );
 
 	// Resolve the from/to URLs automatically (wp-config-local.php is gitignored, so never hardcode).
+	// The local target is resolved from config too, so it works even when the local DB is still empty.
 	$fromUrl = trim( (string) run( "cd {{current_path}} && {{bin/wp}} option get home" ) );
-	$toUrl   = trim( (string) runLocally( "$localWp option get home" ) );
+	$toUrl   = pull_db_local_url( $localWp );
 
 	info( "Source ($source): <comment>$fromUrl</comment>" );
-	info( "Target (local):   <comment>$toUrl</comment>" );
+	info( "Target (local):   <comment>" . ( $toUrl !== '' ? $toUrl : '(unknown - set local/url)' ) . '</comment>' );
+
+	if ( $toUrl === '' ) {
+		throw new \RuntimeException(
+			"Could not determine the local site URL (empty DB and no WP_HOME/DOMAIN_CURRENT_SITE in the "
+			. "configured wp-config files). Set it explicitly: set( 'local/url', 'https://example.test' );"
+		);
+	}
 
 	$isMultisite = trim( (string) runLocally( "$localWp config get MULTISITE || true" ) ) !== '';
 	$networkFlag = $isMultisite ? ' --network' : '';
@@ -194,4 +211,60 @@ function pull_db_ask_mode( array $categories ): SanitizeMode
 	$choice = askChoice( 'How should personal data be sanitized?', [ 'delete', 'anonymize' ], 0 );
 
 	return SanitizeMode::from( (string) $choice );
+}
+
+/**
+ * Resolve the local site URL (the search-replace target). Tries, in order: the `local/url` override,
+ * `wp option get home` (authoritative once the DB is populated), then the configured wp-config files.
+ * Returns '' when nothing matches, so the caller can fail with a clear message.
+ */
+function pull_db_local_url( string $localWp ): string
+{
+	$override = trim( (string) get( 'local/url' ) );
+	if ( $override !== '' ) {
+		return rtrim( $override, '/' );
+	}
+
+	// Authoritative once the local DB has been imported/populated; empty on a fresh, empty DB.
+	$url = trim( (string) runLocally( "$localWp option get home 2>/dev/null || true" ) );
+	if ( $url !== '' ) {
+		return rtrim( $url, '/' );
+	}
+
+	// Empty local DB: derive the URL from wp-config, which describes the environment regardless of DB.
+	foreach ( (array) get( 'local/config_files' ) as $file ) {
+		$url = pull_db_url_from_config( (string) $file );
+		if ( $url !== '' ) {
+			return $url;
+		}
+	}
+
+	return '';
+}
+
+/**
+ * Read a site URL from a single wp-config file by scanning its define()s. Looks for WP_HOME, then
+ * WP_SITEURL, then DOMAIN_CURRENT_SITE (multisite, https prepended). Returns '' if the file is
+ * absent or none are defined. wp-cli's `config get` doesn't follow includes, so we parse the text.
+ */
+function pull_db_url_from_config( string $file ): string
+{
+	$path = parse( $file );
+	if ( trim( (string) runLocally( 'test -f ' . escapeshellarg( $path ) . ' && echo 1 || true' ) ) !== '1' ) {
+		return '';
+	}
+
+	$contents = (string) runLocally( 'cat ' . escapeshellarg( $path ) );
+
+	foreach ( [ 'WP_HOME', 'WP_SITEURL' ] as $const ) {
+		if ( preg_match( '/define\s*\(\s*[\'"]' . $const . '[\'"]\s*,\s*[\'"]([^\'"]+)[\'"]/', $contents, $m ) ) {
+			return rtrim( $m[1], '/' );
+		}
+	}
+
+	if ( preg_match( '/define\s*\(\s*[\'"]DOMAIN_CURRENT_SITE[\'"]\s*,\s*[\'"]([^\'"]+)[\'"]/', $contents, $m ) ) {
+		return 'https://' . rtrim( $m[1], '/' );
+	}
+
+	return '';
 }
