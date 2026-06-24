@@ -212,14 +212,26 @@ final class Sanitizer
 
 	// --- user matching --------------------------------------------------------------------------
 
-	/** @return list<array{0:int,1:string}> [id, email] rows from WP-CLI. */
+	/**
+	 * @return list<array{0:int,1:string}> [id, email] rows for every user.
+	 *
+	 * Reads the shared `{prefix}users` table directly rather than `wp user list`. On multisite the
+	 * users table is network-wide but `wp user list` only returns members of the current site, so
+	 * users that belong solely to other subsites would be missed and keep their real e-mail. The
+	 * anonymize UPDATE already targets this same table, so selecting from it keeps the two in sync.
+	 */
 	private function userRows(): array
 	{
-		$csv  = runLocally( "{$this->wp} user list --fields=ID,user_email --format=csv" );
-		$rows = array_map( 'str_getcsv', array_filter( explode( "\n", trim( (string) $csv ) ) ) );
-		array_shift( $rows ); // header
+		$raw  = runLocally( "{$this->wp} db query \"SELECT ID, user_email FROM \`{$this->prefix}users\`\" --skip-column-names" );
+		$rows = [];
+		foreach ( $this->lines( (string) $raw ) as $line ) {
+			$parts = explode( "\t", $line ); // wp db query columns are tab-separated
+			if ( count( $parts ) >= 2 ) {
+				$rows[] = [ (int) trim( $parts[0] ), trim( $parts[1] ) ];
+			}
+		}
 
-		return array_values( $rows );
+		return $rows;
 	}
 
 	/**
