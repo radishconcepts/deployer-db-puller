@@ -11,22 +11,24 @@ namespace Deployer;
 use Radishconcepts\Deployer\Wp\Sanitizer;
 use Radishconcepts\Deployer\Wp\SanitizeMode;
 use Symfony\Component\Console\Input\InputOption;
-
-use function Laravel\Prompts\multiselect;
+use Symfony\Component\Console\Question\ChoiceQuestion;
 
 // Deployer runs tasks in worker subprocesses that don't always have the consuming project's
 // Composer PSR-4 mapping for this package registered, so load our classes explicitly here.
 require_once __DIR__ . '/src/SanitizeMode.php';
 require_once __DIR__ . '/src/Sanitizer.php';
 
-// laravel/prompts ships multiselect() et al. via Composer's "files" autoload. Deployer worker
-// subprocesses register the class autoloader but don't run those file includes, so the helper
-// functions go missing ("Call to undefined function Laravel\Prompts\multiselect"). The classes
-// themselves DO autoload, so ask one of them where it lives and load the sibling helpers.php.
-if ( ! function_exists( 'Laravel\Prompts\multiselect' ) && class_exists( \Laravel\Prompts\Prompt::class ) ) {
-	$prompts_helpers = dirname( ( new \ReflectionClass( \Laravel\Prompts\Prompt::class ) )->getFileName() ) . '/helpers.php';
-	if ( is_file( $prompts_helpers ) ) {
-		require_once $prompts_helpers;
+// laravel/prompts provides multiselect() (and its classes) via the consumer's Composer autoloader.
+// Deployer worker subprocesses don't fully bootstrap that autoloader, so neither the helper
+// functions nor the classes are guaranteed to be present here ("Call to undefined function
+// Laravel\Prompts\multiselect"). Load the consumer's autoloader explicitly (idempotent: Composer
+// guards against re-registering), which restores both the PSR-4 classes and the files helpers.
+if ( ! function_exists( 'Laravel\Prompts\multiselect' ) ) {
+	// This package lives at <consumer>/vendor/radishconcepts/deployer-db-puller, so the consumer's
+	// autoloader sits three directories up. Absent when developing this package in isolation.
+	$consumer_autoload = __DIR__ . '/../../../autoload.php';
+	if ( is_file( $consumer_autoload ) ) {
+		require_once $consumer_autoload;
 	}
 }
 
@@ -171,13 +173,25 @@ function pull_db_ask_categories(): array
 		$options[ $slug ] = PULL_DB_CATEGORY_LABELS[ $slug ] ?? $slug;
 	}
 
-	// Returns the selected slugs (the option keys); defaults to every slug ticked.
-	return array_values( multiselect(
-		label: 'Which data should be sanitized?',
-		options: $options,
-		default: array_keys( $options ),
-		hint: 'Space toggles a tick, enter confirms. Untick to keep that data.',
-	) );
+	// Preferred: real checkboxes via laravel/prompts. Returns the selected slugs (the option keys).
+	if ( function_exists( 'Laravel\Prompts\multiselect' ) ) {
+		return array_values( \Laravel\Prompts\multiselect(
+			label: 'Which data should be sanitized?',
+			options: $options,
+			default: array_keys( $options ),
+			hint: 'Space toggles a tick, enter confirms. Untick to keep that data.',
+		) );
+	}
+
+	// Fallback when laravel/prompts can't be loaded: typed comma-separated multiselect, all selected.
+	$question = new ChoiceQuestion(
+		'Which data should be sanitized? Comma-separated numbers to deselect, blank = all',
+		$choices,
+		implode( ',', array_keys( $choices ) )
+	);
+	$question->setMultiselect( true );
+
+	return Deployer::get()->getHelper( 'question' )->ask( input(), output(), $question );
 }
 
 /** Resolve the sanitize mode: honor --mode, otherwise ask (only when a mode-sensitive category is chosen). */
