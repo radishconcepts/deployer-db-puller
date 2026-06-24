@@ -112,8 +112,9 @@ task( 'pull:db', function () {
 		writeln( ' - Exporting remote database' );
 		run( "cd {{current_path}} && {{bin/wp}} db export - | gzip > $remoteDump" );
 
-		// 2. Download the dump to the local tmp dir.
+		// 2. Download the dump to the local tmp dir (rsync won't create the target dir itself).
 		writeln( ' - Downloading dump' );
+		runLocally( 'mkdir -p ' . escapeshellarg( dirname( $localDump ) ) );
 		download( $remoteDump, $localDump );
 	} finally {
 		// 3. Always clean up the remote dump, even when the export/download failed.
