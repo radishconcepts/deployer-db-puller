@@ -11,7 +11,6 @@ namespace Deployer;
 use Radishconcepts\Deployer\Wp\Sanitizer;
 use Radishconcepts\Deployer\Wp\SanitizeMode;
 use Symfony\Component\Console\Input\InputOption;
-use Symfony\Component\Console\Question\ChoiceQuestion;
 
 // Deployer runs tasks in worker subprocesses that don't always have the consuming project's
 // Composer PSR-4 mapping for this package registered, so load our classes explicitly here.
@@ -130,26 +129,32 @@ task( 'pull:db', function () {
 task( 'pull:db' )->limit( 1 );
 
 /**
- * Ask which data categories to sanitize. All are pre-selected; the user deselects to keep data.
+ * Ask which data categories to sanitize. Default (and safest) is to sanitize everything; only when
+ * the user declines do we show a multiselect to pick a subset.
  *
- * This is a Symfony multiselect (a numbered list, deselect by typing comma-separated numbers),
- * NOT an arrow-key/space checkbox UI: Deployer runs tasks in worker subprocesses that proxy
- * prompts to the master over a pipe, so libraries that grab the TTY directly (e.g. laravel/prompts)
- * silently return their defaults here. Symfony's QuestionHelper is the one Deployer proxies.
+ * Both prompts use Deployer's askConfirmation()/askChoice(), NOT a raw QuestionHelper->ask(). In a
+ * Deployer worker those native helpers proxy the prompt to the master's TTY (see isWorker() branch
+ * in functions.php); a raw ask() does not block in a worker and silently returns its default.
+ * askChoice() also can't pre-select everything (its default must be a single key), which is the
+ * other reason for the confirm-then-pick flow.
  *
  * @return list<string>
  */
 function pull_db_ask_categories(): array
 {
-	$choices  = array_values( (array) get( 'sanitize/categories' ) );
-	$question = new ChoiceQuestion(
-		'Which data should be sanitized? Comma-separated numbers to deselect, blank = all',
-		$choices,
-		implode( ',', array_keys( $choices ) ) // default: everything selected
-	);
-	$question->setMultiselect( true );
+	$choices = array_values( (array) get( 'sanitize/categories' ) );
+	if ( $choices === [] ) {
+		return [];
+	}
 
-	return Deployer::get()->getHelper( 'question' )->ask( input(), output(), $question );
+	if ( askConfirmation( 'Sanitize all data categories (' . implode( ', ', $choices ) . ')?', true ) ) {
+		return $choices;
+	}
+
+	// User wants a subset: pick the categories to sanitize (type comma-separated numbers).
+	$selected = askChoice( 'Which categories should be sanitized?', $choices, null, true );
+
+	return array_values( (array) $selected );
 }
 
 /** Resolve the sanitize mode: honor --mode, otherwise ask (only when a mode-sensitive category is chosen). */
