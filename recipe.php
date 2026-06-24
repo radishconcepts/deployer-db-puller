@@ -146,13 +146,14 @@ function pull_db_ask_categories(): array
 		return [];
 	}
 
-	$lines = [ 'Which data should be sanitized? (all selected by default)' ];
+	// Print the list with plain writeln(); only the short ask() line gets Deployer's <question>
+	// styling (cyan background), so the whole list isn't highlighted.
+	writeln( 'Which data should be sanitized? (all selected by default)' );
 	foreach ( $choices as $i => $slug ) {
-		$lines[] = sprintf( '  [%d] %s', $i, $slug );
+		writeln( sprintf( '  [%d] %s', $i, $slug ) );
 	}
-	$lines[] = 'Comma-separated numbers to deselect, blank = all';
 
-	$answer = ask( implode( "\n", $lines ), null );
+	$answer = ask( 'Comma-separated numbers to deselect, blank = all', null );
 	if ( $answer === null || trim( $answer ) === '' ) {
 		return $choices;
 	}
