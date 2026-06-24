@@ -18,23 +18,6 @@ use Symfony\Component\Console\Question\ChoiceQuestion;
 require_once __DIR__ . '/src/SanitizeMode.php';
 require_once __DIR__ . '/src/Sanitizer.php';
 
-// laravel/prompts provides multiselect() (and its classes) via the consumer's Composer autoloader.
-// Deployer worker subprocesses don't fully bootstrap that autoloader, so neither the helper
-// functions nor the classes are guaranteed to be present here ("Call to undefined function
-// Laravel\Prompts\multiselect"). Load the consumer's autoloader explicitly (idempotent: Composer
-// guards against re-registering), which restores both the PSR-4 classes and the files helpers.
-if ( ! function_exists( 'Laravel\Prompts\multiselect' ) ) {
-	// Installed it lives at <consumer>/vendor/radishconcepts/deployer-db-puller, so the consumer's
-	// autoloader is two directories up; the deeper path covers a standalone checkout with its own
-	// vendor/. First match wins; absent when developing this package without any vendor/ at all.
-	foreach ( [ __DIR__ . '/../../autoload.php', __DIR__ . '/vendor/autoload.php' ] as $consumer_autoload ) {
-		if ( is_file( $consumer_autoload ) ) {
-			require_once $consumer_autoload;
-			break;
-		}
-	}
-}
-
 // WP-CLI binary on the remote hosts (Hypernode/our servers expose `wp` globally).
 set( 'bin/wp', 'wp' );
 
@@ -146,52 +129,23 @@ task( 'pull:db', function () {
 // This task orchestrates the source host and local commands itself; do not run it implicitly on all hosts.
 task( 'pull:db' )->limit( 1 );
 
-/** Human-readable labels for the built-in categories; unknown slugs fall back to the slug itself. */
-const PULL_DB_CATEGORY_LABELS = [
-	'gf'          => 'Gravity Forms entries',
-	'users'       => 'Users',
-	'comments'    => 'Comments',
-	'woocommerce' => 'WooCommerce orders & customers',
-	'pronamic'    => 'Pronamic payments',
-];
-
 /**
- * Ask which data categories to sanitize, as an interactive checklist (all ticked by default).
- * Use the arrow keys to move, space to toggle a tick, enter to confirm. Untick to keep that data.
+ * Ask which data categories to sanitize. All are pre-selected; the user deselects to keep data.
  *
- * In non-interactive runs (e.g. `-n` / CI) the prompt is skipped and every category is sanitized.
+ * This is a Symfony multiselect (a numbered list, deselect by typing comma-separated numbers),
+ * NOT an arrow-key/space checkbox UI: Deployer runs tasks in worker subprocesses that proxy
+ * prompts to the master over a pipe, so libraries that grab the TTY directly (e.g. laravel/prompts)
+ * silently return their defaults here. Symfony's QuestionHelper is the one Deployer proxies.
  *
  * @return list<string>
  */
 function pull_db_ask_categories(): array
 {
-	$choices = array_values( (array) get( 'sanitize/categories' ) );
-
-	// No TTY to draw checkboxes on: keep the safe default of sanitizing everything.
-	if ( ! input()->isInteractive() ) {
-		return $choices;
-	}
-
-	$options = [];
-	foreach ( $choices as $slug ) {
-		$options[ $slug ] = PULL_DB_CATEGORY_LABELS[ $slug ] ?? $slug;
-	}
-
-	// Preferred: real checkboxes via laravel/prompts. Returns the selected slugs (the option keys).
-	if ( function_exists( 'Laravel\Prompts\multiselect' ) ) {
-		return array_values( \Laravel\Prompts\multiselect(
-			label: 'Which data should be sanitized?',
-			options: $options,
-			default: array_keys( $options ),
-			hint: 'Space toggles a tick, enter confirms. Untick to keep that data.',
-		) );
-	}
-
-	// Fallback when laravel/prompts can't be loaded: typed comma-separated multiselect, all selected.
+	$choices  = array_values( (array) get( 'sanitize/categories' ) );
 	$question = new ChoiceQuestion(
 		'Which data should be sanitized? Comma-separated numbers to deselect, blank = all',
 		$choices,
-		implode( ',', array_keys( $choices ) )
+		implode( ',', array_keys( $choices ) ) // default: everything selected
 	);
 	$question->setMultiselect( true );
 
