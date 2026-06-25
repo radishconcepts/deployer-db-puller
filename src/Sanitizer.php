@@ -19,6 +19,16 @@ final class Sanitizer
 	/** Categories whose behaviour depends on the {@see SanitizeMode}. */
 	public const MODE_SENSITIVE = [ 'comments', 'woocommerce', 'pronamic' ];
 
+	/**
+	 * WooCommerce order-type posts kept in wp_posts (with OR without HPOS). Covers core orders and
+	 * refunds, the HPOS placeholder type (reserves post IDs when HPOS is authoritative) and
+	 * WooCommerce Subscriptions. This is wc_get_order_types() plus the placeholder + subscriptions.
+	 */
+	private const WC_ORDER_POST_TYPES = [ 'shop_order', 'shop_order_refund', 'shop_order_placehold', 'shop_subscription' ];
+
+	/** Subset of WC order posts that actually carry PII in postmeta (placeholders do not). */
+	private const WC_ORDER_PII_TYPES = [ 'shop_order', 'shop_order_refund', 'shop_subscription' ];
+
 	public function __construct(
 		private readonly string $wp,
 		private readonly string $prefix,
@@ -116,7 +126,7 @@ final class Sanitizer
 		writeln( '   comments:    anonymized author fields in ' . implode( ', ', $tables ) );
 	}
 
-	/** WooCommerce: handles both HPOS tables and legacy shop_order posts; skips whatever is absent. */
+	/** WooCommerce: HPOS tables AND legacy/synced order posts in wp_posts/postmeta (with or without HPOS). */
 	private function wooCommerce( SanitizeMode $mode ): void
 	{
 		$candidates = $this->prefixed( [
@@ -126,20 +136,17 @@ final class Sanitizer
 			'woocommerce_downloadable_product_permissions', 'woocommerce_api_keys',
 		] );
 		$tables = $this->existingTables( $candidates );
-		$legacy = $this->postCount( 'shop_order' );
+		$orders = $this->countPostsByType( self::WC_ORDER_POST_TYPES ); // across all (sub)sites
 
-		if ( $tables === [] && $legacy === 0 ) {
+		if ( $tables === [] && $orders === 0 ) {
 			writeln( '   woocommerce: not present, skipped' );
 			return;
 		}
 
 		if ( $mode === SanitizeMode::Delete ) {
 			$this->truncate( $tables );
-			$deleted = 0;
-			foreach ( [ 'shop_order', 'shop_order_refund', 'shop_subscription' ] as $type ) {
-				$deleted += $this->deletePosts( $type );
-			}
-			writeln( "   woocommerce: truncated " . count( $tables ) . " table(s), deleted $deleted legacy order post(s)" );
+			$this->deletePostsByType( self::WC_ORDER_POST_TYPES ); // posts + their postmeta, every site
+			writeln( "   woocommerce: truncated " . count( $tables ) . " table(s), deleted $orders order post(s)" );
 			return;
 		}
 
@@ -166,15 +173,15 @@ final class Sanitizer
 					. "email = CONCAT('customer', customer_id, '@example.test'), city = 'Anytown', postcode = '0000';"
 				);
 			}
-			if ( $legacy > 0 ) {
-				$this->query( $this->anonymizePostmetaSql( [
+			if ( $orders > 0 ) {
+				$this->anonymizePostmetaByType( self::WC_ORDER_PII_TYPES, [
 					'_billing_first_name', '_billing_last_name', '_billing_company', '_billing_address_1',
 					'_billing_address_2', '_billing_city', '_billing_postcode', '_billing_email', '_billing_phone',
 					'_shipping_first_name', '_shipping_last_name', '_shipping_company', '_shipping_address_1',
 					'_shipping_address_2', '_shipping_city', '_shipping_postcode', '_shipping_email', '_shipping_phone',
-				], [ '_billing_email', '_shipping_email' ], [ '_billing_phone', '_shipping_phone' ] ) );
+				], [ '_billing_email', '_shipping_email' ], [ '_billing_phone', '_shipping_phone' ] );
 			}
-			writeln( "   woocommerce: anonymized order/customer PII (" . count( $tables ) . " table(s), $legacy legacy order(s))" );
+			writeln( "   woocommerce: anonymized order/customer PII (" . count( $tables ) . " table(s), $orders order post(s))" );
 		} catch ( Throwable $e ) {
 			warning( '   woocommerce: anonymize was only partial (schema mismatch); consider delete mode. ' . $e->getMessage() );
 		}
@@ -188,7 +195,7 @@ final class Sanitizer
 			'pronamic_pay_payments', 'pronamic_pay_subscriptions',
 		] );
 		$tables   = $this->existingTables( $candidates );
-		$payments = $this->postCount( 'pronamic_payment' );
+		$payments = $this->countPostsByType( [ 'pronamic_payment', 'pronamic_pay_subscr' ] ); // across all (sub)sites
 
 		if ( $tables === [] && $payments === 0 ) {
 			writeln( '   pronamic:    not present, skipped' );
@@ -197,8 +204,8 @@ final class Sanitizer
 
 		if ( $mode === SanitizeMode::Delete ) {
 			$this->truncate( $tables );
-			$deleted = $this->deletePosts( 'pronamic_payment' ) + $this->deletePosts( 'pronamic_pay_subscr' );
-			writeln( "   pronamic:    truncated " . count( $tables ) . " table(s), deleted $deleted payment/subscription post(s)" );
+			$this->deletePostsByType( [ 'pronamic_payment', 'pronamic_pay_subscr' ] ); // posts + their postmeta, every site
+			writeln( "   pronamic:    truncated " . count( $tables ) . " table(s), deleted $payments payment/subscription post(s)" );
 			return;
 		}
 
@@ -207,12 +214,12 @@ final class Sanitizer
 				$this->query( "UPDATE `{$this->prefix}pronamic_pay_mollie_customers` SET email = CONCAT('mollie', id, '@example.test') WHERE email <> '';" );
 			}
 			if ( $payments > 0 ) {
-				$this->query( $this->anonymizePostmetaSql( [
+				$this->anonymizePostmetaByType( [ 'pronamic_payment', 'pronamic_pay_subscr' ], [
 					'_pronamic_payment_email', '_pronamic_payment_telephone_number',
 					'_pronamic_payment_consumer_name', '_pronamic_payment_consumer_account', '_pronamic_payment_consumer_iban',
 					'_pronamic_payment_consumer_bic', '_pronamic_payment_first_name', '_pronamic_payment_last_name',
 					'_pronamic_payment_address', '_pronamic_payment_city', '_pronamic_payment_zip',
-				], [ '_pronamic_payment_email' ], [ '_pronamic_payment_telephone_number' ] ) );
+				], [ '_pronamic_payment_email' ], [ '_pronamic_payment_telephone_number' ] );
 			}
 			writeln( "   pronamic:    anonymized Mollie/payment PII (" . count( $tables ) . " table(s), $payments payment(s))" );
 		} catch ( Throwable $e ) {
@@ -300,37 +307,86 @@ final class Sanitizer
 		$this->local( "{$this->wp} db query " . escapeshellarg( $sql ) );
 	}
 
-	private function postCount( string $postType ): int
+	/**
+	 * [postsTable, postmetaTable] pairs for every (sub)site. Order/payment posts can live on any
+	 * subsite ({prefix}{blog_id}_posts), so we must touch all of them, not just the base tables.
+	 * Operating on the tables directly (rather than `wp post list/delete`) also works regardless of
+	 * HPOS, which routes order queries away from wp_posts and would hide them from WP-CLI.
+	 *
+	 * @return list<array{0:string,1:string}>
+	 */
+	private function postTablePairs(): array
 	{
-		return (int) trim( $this->local( "{$this->wp} post list --post_type=$postType --format=count || true" ) );
+		$pattern = '/^' . preg_quote( $this->prefix, '/' ) . '(\d+_)?posts$/'; // base + {blog_id}, not random *posts tables
+		$pairs   = [];
+		foreach ( $this->tablesLike( "{$this->prefix}%posts" ) as $posts ) {
+			if ( preg_match( $pattern, $posts ) ) {
+				$pairs[] = [ $posts, substr( $posts, 0, -5 ) . 'postmeta' ]; // wp_2_posts -> wp_2_postmeta
+			}
+		}
+
+		return $pairs;
 	}
 
-	private function deletePosts( string $postType ): int
+	/** @param list<string> $types @return int Posts of these types across all (sub)sites. */
+	private function countPostsByType( array $types ): int
 	{
-		$ids = trim( $this->local( "{$this->wp} post list --post_type=$postType --format=ids || true" ) );
-		if ( $ids === '' ) {
+		if ( $types === [] ) {
 			return 0;
 		}
-		$this->local( "{$this->wp} post delete $ids --force" );
-		return count( preg_split( '/\s+/', $ids ) ?: [] );
+		$in    = $this->quoteList( $types );
+		$total = 0;
+		foreach ( $this->postTablePairs() as [ $posts ] ) {
+			$total += (int) trim( $this->local(
+				"{$this->wp} db query \"SELECT COUNT(*) FROM \`$posts\` WHERE post_type IN ($in)\" --skip-column-names"
+			) );
+		}
+
+		return $total;
+	}
+
+	/** Delete posts of the given types AND their postmeta, across all (sub)sites. @param list<string> $types */
+	private function deletePostsByType( array $types ): void
+	{
+		if ( $types === [] ) {
+			return;
+		}
+		$in = $this->quoteList( $types );
+		foreach ( $this->postTablePairs() as [ $posts, $meta ] ) {
+			$this->query(
+				"DELETE m FROM `$meta` m JOIN `$posts` p ON m.post_id = p.ID WHERE p.post_type IN ($in); "
+				. "DELETE FROM `$posts` WHERE post_type IN ($in);"
+			);
+		}
 	}
 
 	/**
-	 * Build an UPDATE that overwrites postmeta PII: e-mail keys get a fake address, phone keys a
-	 * zeroed number, everything else the literal "Anonymized".
+	 * Anonymize postmeta PII for posts of the given types, across all (sub)sites: e-mail keys get a
+	 * fake address, phone keys a zeroed number, everything else the literal "Anonymized".
 	 *
-	 * @param list<string> $keys      All meta_keys to touch.
+	 * @param list<string> $types     Post types whose meta to touch.
+	 * @param list<string> $keys      All meta_keys to overwrite.
 	 * @param list<string> $emailKeys Keys that should receive a fake e-mail.
 	 * @param list<string> $phoneKeys Keys that should receive a fake phone number.
 	 */
-	private function anonymizePostmetaSql( array $keys, array $emailKeys, array $phoneKeys ): string
+	private function anonymizePostmetaByType( array $types, array $keys, array $emailKeys, array $phoneKeys ): void
 	{
-		$list  = static fn ( array $k ): string => "'" . implode( "','", $k ) . "'";
-		return "UPDATE `{$this->prefix}postmeta` SET meta_value = CASE "
-			. "WHEN meta_key IN ({$list( $emailKeys )}) THEN CONCAT('anon', post_id, '@example.test') "
-			. "WHEN meta_key IN ({$list( $phoneKeys )}) THEN '0000000000' "
-			. "ELSE 'Anonymized' END "
-			. "WHERE meta_key IN ({$list( $keys )});";
+		$typeIn = $this->quoteList( $types );
+		foreach ( $this->postTablePairs() as [ $posts, $meta ] ) {
+			$this->query(
+				"UPDATE `$meta` m JOIN `$posts` p ON m.post_id = p.ID SET m.meta_value = CASE "
+				. "WHEN m.meta_key IN ({$this->quoteList( $emailKeys )}) THEN CONCAT('anon', m.post_id, '@example.test') "
+				. "WHEN m.meta_key IN ({$this->quoteList( $phoneKeys )}) THEN '0000000000' "
+				. "ELSE 'Anonymized' END "
+				. "WHERE p.post_type IN ($typeIn) AND m.meta_key IN ({$this->quoteList( $keys )});"
+			);
+		}
+	}
+
+	/** @param list<string> $values @return string Comma-separated, single-quoted SQL string literals. */
+	private function quoteList( array $values ): string
+	{
+		return implode( ',', array_map( static fn ( string $v ): string => "'" . str_replace( "'", "''", $v ) . "'", $values ) );
 	}
 
 	/** @return list<string> Non-empty trimmed lines. */
