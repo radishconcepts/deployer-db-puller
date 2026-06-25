@@ -34,6 +34,11 @@ set( 'db_dump/local', 'tmp/db-pull.sql.gz' );
 // a latin1 connection and then collide on a unique key. Set '' to skip the flag entirely.
 set( 'db/charset', 'utf8mb4' );
 
+// Process timeout (seconds) for the heavy DB steps: export, import, search-replace and sanitize.
+// Deployer's default ({{default_timeout}}) is too short for large databases. Set 0 (or null) to
+// disable the timeout entirely.
+set( 'db/timeout', 1800 );
+
 // Users that must NOT be anonymized (so you can still log in locally). Each entry may be:
 // a full e-mail (floris@radishconcepts.com), an @domain (@radishconcepts.com), or a numeric ID (1).
 // Their original password hash is kept; use `wp user update` locally if you need to set one.
@@ -95,6 +100,10 @@ task( 'pull:db', function () {
 	$charset     = trim( (string) get( 'db/charset' ) );
 	$charsetFlag = $charset !== '' ? ' --default-character-set=' . escapeshellarg( $charset ) : '';
 
+	// null disables the timeout (Symfony Process), any positive int caps it; 0/empty also means off.
+	$dbTimeoutRaw = get( 'db/timeout' );
+	$dbTimeout    = ( $dbTimeoutRaw === null || (int) $dbTimeoutRaw <= 0 ) ? null : (int) $dbTimeoutRaw;
+
 	if ( $dryRun ) {
 		writeln( '' );
 		writeln( '<info>DRY RUN</info> - no changes will be made. Planned steps:' );
@@ -122,7 +131,7 @@ task( 'pull:db', function () {
 	try {
 		// 1. Export + gzip on the source host.
 		writeln( ' - Exporting remote database' );
-		run( "cd {{current_path}} && {{bin/wp}} db export -$charsetFlag | gzip > $remoteDump" );
+		run( "cd {{current_path}} && {{bin/wp}} db export -$charsetFlag | gzip > $remoteDump", [ 'timeout' => $dbTimeout ] );
 
 		// 2. Download the dump to the local tmp dir (rsync won't create the target dir itself).
 		writeln( ' - Downloading dump' );
@@ -135,17 +144,17 @@ task( 'pull:db', function () {
 
 	// 4. Import into the local database.
 	writeln( ' - Importing into local database' );
-	runLocally( "gunzip -c $localDump | $localWp db import -$charsetFlag" );
+	runLocally( "gunzip -c $localDump | $localWp db import -$charsetFlag", [ 'timeout' => $dbTimeout ] );
 	runLocally( "rm -f $localDump" );
 
 	// 5. Search-replace the URLs (works for single-site and multisite).
 	writeln( ' - Replacing URLs' );
-	$replace = function ( string $from, string $to ) use ( $localWp, $networkFlag ): void {
+	$replace = function ( string $from, string $to ) use ( $localWp, $networkFlag, $dbTimeout ): void {
 		if ( $from === '' || $to === '' || $from === $to ) {
 			return;
 		}
 		runLocally( "$localWp search-replace " . escapeshellarg( $from ) . ' ' . escapeshellarg( $to )
-			. " --all-tables --skip-columns=guid --report-changed-only$networkFlag" );
+			. " --all-tables --skip-columns=guid --report-changed-only$networkFlag", [ 'timeout' => $dbTimeout ] );
 	};
 
 	$replace( $fromUrl, $toUrl );
@@ -161,7 +170,7 @@ task( 'pull:db', function () {
 	// 6. Sanitize personal data per chosen category.
 	writeln( " - Sanitizing personal data (mode: {$mode->value})" );
 	$prefix    = trim( (string) runLocally( "$localWp config get table_prefix" ) );
-	$sanitizer = new Sanitizer( $localWp, $prefix );
+	$sanitizer = new Sanitizer( $localWp, $prefix, $dbTimeout );
 	foreach ( $categories as $category ) {
 		$sanitizer->sanitize( $category, $mode, $keepUsers );
 	}

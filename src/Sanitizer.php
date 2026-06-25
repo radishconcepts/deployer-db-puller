@@ -22,7 +22,14 @@ final class Sanitizer
 	public function __construct(
 		private readonly string $wp,
 		private readonly string $prefix,
+		private readonly ?int $timeout = null,
 	) {
+	}
+
+	/** runLocally() with our configured process timeout (null disables it; a positive int caps it). */
+	private function local( string $command ): string
+	{
+		return (string) runLocally( $command, [ 'timeout' => $this->timeout ] );
 	}
 
 	/**
@@ -222,7 +229,7 @@ final class Sanitizer
 	 */
 	private function userRows(): array
 	{
-		$raw  = runLocally( "{$this->wp} db query \"SELECT ID, user_email FROM \`{$this->prefix}users\`\" --skip-column-names" );
+		$raw  = $this->local( "{$this->wp} db query \"SELECT ID, user_email FROM \`{$this->prefix}users\`\" --skip-column-names" );
 		$rows = [];
 		foreach ( $this->lines( (string) $raw ) as $line ) {
 			$parts = explode( "\t", $line ); // wp db query columns are tab-separated
@@ -274,8 +281,8 @@ final class Sanitizer
 	/** @return list<string> Tables matching a SQL LIKE pattern. */
 	private function tablesLike( string $pattern ): array
 	{
-		$raw = runLocally( "{$this->wp} db query \"SHOW TABLES LIKE '$pattern'\" --skip-column-names" );
-		return $this->lines( (string) $raw );
+		$raw = $this->local( "{$this->wp} db query \"SHOW TABLES LIKE '$pattern'\" --skip-column-names" );
+		return $this->lines( $raw );
 	}
 
 	/**
@@ -289,11 +296,11 @@ final class Sanitizer
 			return [];
 		}
 		$in  = implode( ',', array_map( static fn ( string $t ): string => "'" . str_replace( "'", '', $t ) . "'", $candidates ) );
-		$raw = runLocally(
+		$raw = $this->local(
 			"{$this->wp} db query \"SELECT table_name FROM information_schema.tables "
 			. "WHERE table_schema = DATABASE() AND table_name IN ($in)\" --skip-column-names"
 		);
-		return $this->lines( (string) $raw );
+		return $this->lines( $raw );
 	}
 
 	/** @param list<string> $tables */
@@ -308,21 +315,21 @@ final class Sanitizer
 
 	private function query( string $sql ): void
 	{
-		runLocally( "{$this->wp} db query " . escapeshellarg( $sql ) );
+		$this->local( "{$this->wp} db query " . escapeshellarg( $sql ) );
 	}
 
 	private function postCount( string $postType ): int
 	{
-		return (int) trim( (string) runLocally( "{$this->wp} post list --post_type=$postType --format=count || true" ) );
+		return (int) trim( $this->local( "{$this->wp} post list --post_type=$postType --format=count || true" ) );
 	}
 
 	private function deletePosts( string $postType ): int
 	{
-		$ids = trim( (string) runLocally( "{$this->wp} post list --post_type=$postType --format=ids || true" ) );
+		$ids = trim( $this->local( "{$this->wp} post list --post_type=$postType --format=ids || true" ) );
 		if ( $ids === '' ) {
 			return 0;
 		}
-		runLocally( "{$this->wp} post delete $ids --force" );
+		$this->local( "{$this->wp} post delete $ids --force" );
 		return count( preg_split( '/\s+/', $ids ) ?: [] );
 	}
 
