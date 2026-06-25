@@ -243,8 +243,8 @@ function pull_db_ask_mode( array $categories ): SanitizeMode
 		return SanitizeMode::Delete;
 	}
 
-	// Associative choices + a string default so the prompt reads "(default: delete)" instead of "(default: 0)".
-	$choice = askChoice( 'How should personal data be sanitized?', [ 'delete' => 'delete', 'anonymize' => 'anonymize' ], 'delete' );
+	// Numbered choices ([0] delete, [1] anonymize) with 0 (delete) as the default.
+	$choice = askChoice( 'How should personal data be sanitized?', [ 'delete', 'anonymize' ], 0 );
 
 	return SanitizeMode::from( (string) $choice );
 }
