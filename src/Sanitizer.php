@@ -66,26 +66,29 @@ final class Sanitizer
 	/** Anonymize every user except the allowlist. Never deletes (would break authorship/orders). */
 	private function users( array $keep ): void
 	{
-		$rows = $this->userRows();
-		$anon = $this->usersToAnonymize( $rows, $keep );
+		$users   = "{$this->prefix}users";
+		$meta    = "{$this->prefix}usermeta";
+		$keepSql = $this->userKeepPredicate( $keep ); // small boolean over alias `u`, regardless of user count
 
-		if ( $anon === [] ) {
-			writeln( '   users:       nothing to anonymize (all matched the keep list)' );
-			return;
-		}
-
-		$ids = implode( ',', $anon ); // integers only, safe to inline
+		// Anonymize with a JOIN + predicate rather than an explicit "ID IN (...)" list: on large
+		// sites that list grows past escapeshellarg()'s 1 MB limit and crashes. The usermeta UPDATE
+		// runs first so the keep predicate still sees the original e-mails (the users UPDATE then
+		// rewrites them). meta_value uses CASE so nickname gets a placeholder, the rest is cleared.
 		$this->query(
-			"UPDATE `{$this->prefix}users` SET "
-			. "user_login = CONCAT('user', ID), user_nicename = CONCAT('user', ID), "
-			. "user_email = CONCAT('user', ID, '@example.test'), display_name = CONCAT('User ', ID), "
-			. "user_url = '', user_activation_key = '' WHERE ID IN ($ids); "
-			. "UPDATE `{$this->prefix}usermeta` SET meta_value = '' "
-			. "WHERE user_id IN ($ids) AND meta_key IN ('first_name','last_name','description'); "
-			. "UPDATE `{$this->prefix}usermeta` SET meta_value = CONCAT('user', user_id) "
-			. "WHERE user_id IN ($ids) AND meta_key = 'nickname';"
+			"UPDATE `$meta` um JOIN `$users` u ON um.user_id = u.ID "
+			. "SET um.meta_value = CASE WHEN um.meta_key = 'nickname' THEN CONCAT('user', u.ID) ELSE '' END "
+			. "WHERE NOT ($keepSql) AND um.meta_key IN ('first_name','last_name','description','nickname'); "
+			. "UPDATE `$users` u SET "
+			. "u.user_login = CONCAT('user', u.ID), u.user_nicename = CONCAT('user', u.ID), "
+			. "u.user_email = CONCAT('user', u.ID, '@example.test'), u.display_name = CONCAT('User ', u.ID), "
+			. "u.user_url = '', u.user_activation_key = '' WHERE NOT ($keepSql);"
 		);
-		writeln( '   users:       anonymized ' . count( $anon ) . ' user(s), kept ' . ( count( $rows ) - count( $anon ) ) );
+
+		// Counts for reporting (kept users keep their original e-mail, so the predicate still matches
+		// them after the UPDATE; anonymized users now end in @example.test and no longer match).
+		$total = (int) trim( $this->local( "{$this->wp} db query \"SELECT COUNT(*) FROM \`$users\`\" --skip-column-names" ) );
+		$kept  = (int) trim( $this->local( "{$this->wp} db query \"SELECT COUNT(*) FROM \`$users\` u WHERE $keepSql\" --skip-column-names" ) );
+		writeln( "   users:       anonymized " . ( $total - $kept ) . " user(s), kept $kept" );
 	}
 
 	/** Comments: truncate (delete) or anonymize the author identity fields. */
@@ -220,54 +223,33 @@ final class Sanitizer
 	// --- user matching --------------------------------------------------------------------------
 
 	/**
-	 * @return list<array{0:int,1:string}> [id, email] rows for every user.
+	 * Build a small SQL boolean (over users alias `u`) that matches the keep list: numeric IDs, full
+	 * e-mails, and `@domain` suffixes. Used as `WHERE NOT (...)` to anonymize everyone else without
+	 * enumerating every ID (which would blow past escapeshellarg()'s 1 MB limit on large sites).
+	 * Returns '0' (matches nobody) when the keep list is empty, so everyone gets anonymized.
 	 *
-	 * Reads the shared `{prefix}users` table directly rather than `wp user list`. On multisite the
-	 * users table is network-wide but `wp user list` only returns members of the current site, so
-	 * users that belong solely to other subsites would be missed and keep their real e-mail. The
-	 * anonymize UPDATE already targets this same table, so selecting from it keeps the two in sync.
+	 * @param list<string|int> $keep
 	 */
-	private function userRows(): array
+	private function userKeepPredicate( array $keep ): string
 	{
-		$raw  = $this->local( "{$this->wp} db query \"SELECT ID, user_email FROM \`{$this->prefix}users\`\" --skip-column-names" );
-		$rows = [];
-		foreach ( $this->lines( (string) $raw ) as $line ) {
-			$parts = explode( "\t", $line ); // wp db query columns are tab-separated
-			if ( count( $parts ) >= 2 ) {
-				$rows[] = [ (int) trim( $parts[0] ), trim( $parts[1] ) ];
-			}
-		}
-
-		return $rows;
-	}
-
-	/**
-	 * @param list<array{0:int,1:string}> $rows
-	 * @param list<string|int>            $keep
-	 * @return list<int> IDs that should be anonymized.
-	 */
-	private function usersToAnonymize( array $rows, array $keep ): array
-	{
-		$emails  = array_map( 'strtolower', array_filter( $keep, static fn ( $k ) => is_string( $k ) && str_contains( $k, '@' ) && ! str_starts_with( $k, '@' ) ) );
-		$domains = array_map( 'strtolower', array_filter( $keep, static fn ( $k ) => is_string( $k ) && str_starts_with( $k, '@' ) ) );
+		$quote   = static fn ( string $v ): string => "'" . str_replace( "'", "''", strtolower( $v ) ) . "'";
+		$emails  = array_filter( $keep, static fn ( $k ) => is_string( $k ) && str_contains( $k, '@' ) && ! str_starts_with( $k, '@' ) );
+		$domains = array_filter( $keep, static fn ( $k ) => is_string( $k ) && str_starts_with( $k, '@' ) );
 		$ids     = array_map( 'intval', array_filter( $keep, static fn ( $k ) => is_numeric( $k ) ) );
 
-		$anon = [];
-		foreach ( $rows as $row ) {
-			$id    = (int) ( $row[0] ?? 0 );
-			$email = strtolower( trim( (string) ( $row[1] ?? '' ) ) );
-			if ( $id <= 0 ) {
-				continue;
-			}
-			$keepThis = in_array( $id, $ids, true )
-				|| in_array( $email, $emails, true )
-				|| array_filter( $domains, static fn ( string $d ): bool => str_ends_with( $email, $d ) ) !== [];
-			if ( ! $keepThis ) {
-				$anon[] = $id;
-			}
+		$clauses = [];
+		if ( $ids !== [] ) {
+			$clauses[] = 'u.ID IN (' . implode( ',', $ids ) . ')';
+		}
+		if ( $emails !== [] ) {
+			$clauses[] = 'LOWER(u.user_email) IN (' . implode( ',', array_map( $quote, $emails ) ) . ')';
+		}
+		foreach ( $domains as $domain ) {
+			// e.g. '@radishconcepts.com' -> LIKE '%@radishconcepts.com'. Domains carry no SQL wildcards.
+			$clauses[] = 'LOWER(u.user_email) LIKE ' . $quote( '%' . $domain );
 		}
 
-		return $anon;
+		return $clauses === [] ? '0' : '(' . implode( ' OR ', $clauses ) . ')';
 	}
 
 	// --- low-level helpers ----------------------------------------------------------------------
