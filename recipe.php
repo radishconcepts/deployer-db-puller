@@ -116,7 +116,7 @@ task( 'pull:db', function () {
 			$toHost   = (string) parse_url( $toUrl, PHP_URL_HOST );
 			writeln( "                           + host $fromHost -> $toHost (multisite wp_site/wp_blogs)" );
 		}
-		writeln( "  5. Sanitize (mode: {$mode->value}): " . ( $categories === [] ? 'nothing' : implode( ', ', $categories ) ) );
+		writeln( "  5. Sanitize (mode: {$mode->value}): " . ( $categories === [] ? 'nothing' : implode( ', ', array_map( 'Deployer\pull_db_category_label', $categories ) ) ) );
 		writeln( '     Keep users matching:  ' . implode( ', ', $keepUsers ) );
 		writeln( '' );
 		warning( 'Dry run complete. Re-run without --dry-run to execute.' );
@@ -180,6 +180,21 @@ task( 'pull:db', function () {
 // This task orchestrates the source host and local commands itself; do not run it implicitly on all hosts.
 task( 'pull:db' )->limit( 1 );
 
+/** Display labels for the category slugs; unknown slugs fall back to ucfirst(). Slugs stay lowercase. */
+const PULL_DB_CATEGORY_LABELS = [
+	'gf'          => 'Gravity Forms',
+	'users'       => 'Users',
+	'comments'    => 'Comments',
+	'woocommerce' => 'WooCommerce',
+	'pronamic'    => 'Pronamic',
+];
+
+/** Human-readable label for a category slug. */
+function pull_db_category_label( string $slug ): string
+{
+	return PULL_DB_CATEGORY_LABELS[ $slug ] ?? ucfirst( $slug );
+}
+
 /**
  * Ask which data categories to sanitize. All are pre-selected; type comma-separated numbers to
  * deselect (keep) those, blank keeps everything selected.
@@ -202,7 +217,7 @@ function pull_db_ask_categories(): array
 	// styling (cyan background), so the whole list isn't highlighted.
 	writeln( 'Which data should be sanitized? (all selected by default)' );
 	foreach ( $choices as $i => $slug ) {
-		writeln( sprintf( '  [%d] %s', $i, $slug ) );
+		writeln( sprintf( '  [%d] %s', $i, pull_db_category_label( $slug ) ) );
 	}
 
 	$answer = ask( 'Comma-separated numbers to deselect, blank = all', null );
