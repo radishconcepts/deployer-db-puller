@@ -55,6 +55,10 @@ At the start you are asked:
 
 - **Which data to sanitize** (checklist, all pre-selected; deselect to keep data).
 - **delete vs anonymize** (only when a mode-sensitive category is selected).
+- **Which site to pull** (multisite source only): a blog ID pulls just that subsite's
+  `{prefix}{id}_*` tables (e.g. `wp_3_*`); blank pulls the full database. Set a default with
+  `set( 'db/site_id', 3 )`. This targets subsites (ID >= 2); the main site (ID 1) has no numeric
+  table prefix, so pull it in full.
 
 ### Categories
 
@@ -78,6 +82,10 @@ set( 'sanitize/keep_users', [ '@radishconcepts.com', 1 ] );
 
 // Categories offered in the checklist. Default: gf, users, comments, woocommerce, pronamic.
 set( 'sanitize/categories', [ 'gf', 'users' ] );
+
+// Multisite: default subsite to pull ({prefix}{id}_* tables only). Default: '' (full database).
+// Offered as the default in the site prompt; still overridable per run. Subsites (ID >= 2) only.
+set( 'db/site_id', 3 );
 
 // WP-CLI binaries. Defaults: 'wp' on the remote and 'wp' locally.
 set( 'bin/wp', 'wp' );

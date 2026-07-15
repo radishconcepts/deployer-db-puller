@@ -39,6 +39,12 @@ set( 'db/charset', 'utf8mb4' );
 // disable the timeout entirely.
 set( 'db/timeout', 1800 );
 
+// Multisite: restrict the pull to a SINGLE subsite's own tables ({{prefix}}{id}_*, e.g. wp_3_*).
+// This is the default answer to the interactive prompt shown when the SOURCE is multisite; leave
+// empty to pull the full database (all sites + network tables). NOTE: this targets subsites
+// (blog ID >= 2). The main site (ID 1) has no numeric table prefix, so use a full pull for it.
+set( 'db/site_id', '' );
+
 // Users that must NOT be anonymized (so you can still log in locally). Each entry may be:
 // a full e-mail (floris@radishconcepts.com), an @domain (@radishconcepts.com), or a numeric ID (1).
 // Their original password hash is kept; use `wp user update` locally if you need to set one.
@@ -74,6 +80,10 @@ task( 'pull:db', function () {
 	$categories = pull_db_ask_categories();
 	$mode       = pull_db_ask_mode( $categories );
 
+	// Multisite only: offer to pull a single subsite instead of the whole network.
+	$remoteIsMultisite = trim( (string) run( "cd {{current_path}} && {{bin/wp}} config get MULTISITE 2>/dev/null || true" ) ) !== '';
+	$siteId            = pull_db_ask_site_id( $remoteIsMultisite );
+
 	$localWp    = get( 'local/wp' );
 	$keepUsers  = (array) get( 'sanitize/keep_users' );
 	$remoteDump = parse( '{{db_dump/remote}}' );
@@ -104,10 +114,30 @@ task( 'pull:db', function () {
 	$dbTimeoutRaw = get( 'db/timeout' );
 	$dbTimeout    = ( $dbTimeoutRaw === null || (int) $dbTimeoutRaw <= 0 ) ? null : (int) $dbTimeoutRaw;
 
+	// When a subsite is chosen, resolve its actual tables on the source and restrict the export to
+	// them (empty $siteId = full DB, so no --tables flag). Done up front so the dry-run can show it.
+	$sitePattern = '';
+	$siteTables  = [];
+	if ( $siteId !== '' ) {
+		[ $sitePattern, $siteTables ] = pull_db_site_tables( $siteId );
+		if ( $siteTables === [] ) {
+			throw new \RuntimeException(
+				"No tables found for site ID $siteId (pattern '$sitePattern') on '$source'. The main site "
+				. "(ID 1) has no numeric table prefix, so use a full pull (blank site ID) for it."
+			);
+		}
+		info( "Pulling only site ID <comment>$siteId</comment> (" . count( $siteTables ) . " tables matching '$sitePattern')" );
+	}
+	$exportTablesFlag = $siteTables === [] ? '' : ' --tables=' . escapeshellarg( implode( ',', $siteTables ) );
+
 	if ( $dryRun ) {
 		writeln( '' );
 		writeln( '<info>DRY RUN</info> - no changes will be made. Planned steps:' );
-		writeln( "  1. Export on '$source':  {{bin/wp}} db export -$charsetFlag | gzip > {{db_dump/remote}}" );
+		if ( $siteId !== '' ) {
+			writeln( "  1. Export on '$source':  {{bin/wp}} db export (only site $siteId: " . count( $siteTables ) . " tables matching '$sitePattern') | gzip > {{db_dump/remote}}" );
+		} else {
+			writeln( "  1. Export on '$source':  {{bin/wp}} db export -$charsetFlag | gzip > {{db_dump/remote}}" );
+		}
 		writeln( "  2. Download dump to:     {{db_dump/local}}" );
 		writeln( "  3. Import locally:       $localWp db import -$charsetFlag" );
 		writeln( "  4. Search-replace:       $fromUrl -> $toUrl --all-tables$networkFlag" );
@@ -131,7 +161,7 @@ task( 'pull:db', function () {
 	try {
 		// 1. Export + gzip on the source host.
 		writeln( ' - Exporting remote database' );
-		run( "cd {{current_path}} && {{bin/wp}} db export -$charsetFlag | gzip > $remoteDump", [ 'timeout' => $dbTimeout ] );
+		run( "cd {{current_path}} && {{bin/wp}} db export -$exportTablesFlag$charsetFlag | gzip > $remoteDump", [ 'timeout' => $dbTimeout ] );
 
 		// 2. Download the dump to the local tmp dir (rsync won't create the target dir itself).
 		writeln( ' - Downloading dump' );
@@ -262,6 +292,51 @@ function pull_db_ask_mode( array $categories ): SanitizeMode
 	$choice = askChoice( 'How should personal data be sanitized?', [ 'delete', 'anonymize' ], 0 );
 
 	return SanitizeMode::from( (string) $choice );
+}
+
+/**
+ * Multisite only: ask which single subsite to pull. Blank pulls the full database (all sites +
+ * network tables). The `db/site_id` config value is offered as the default. Returns '' for a full
+ * pull; otherwise the numeric blog ID as a string. Single-site installs never prompt.
+ */
+function pull_db_ask_site_id( bool $remoteIsMultisite ): string
+{
+	if ( ! $remoteIsMultisite ) {
+		return '';
+	}
+
+	$default = trim( (string) get( 'db/site_id' ) );
+	$answer  = trim( (string) ask( 'Pull a single site by blog ID? (blank = full database / all sites)', $default !== '' ? $default : null ) );
+
+	if ( $answer === '' ) {
+		return '';
+	}
+
+	if ( ! ctype_digit( $answer ) ) {
+		throw new \RuntimeException( "Invalid site ID '$answer'. Use a numeric blog ID (e.g. 3), or leave blank for a full pull." );
+	}
+
+	return $answer;
+}
+
+/**
+ * Resolve, on the source host, the actual table names belonging to a subsite: everything matching
+ * {prefix}{id}_* (e.g. wp_3_posts, wp_3_options and any plugin tables). Returns [ pattern, tables ].
+ * The list is empty for the main site (ID 1, no numeric prefix) or a non-existent ID.
+ *
+ * @return array{0: string, 1: list<string>}
+ */
+function pull_db_site_tables( string $siteId ): array
+{
+	$prefix  = trim( (string) run( "cd {{current_path}} && {{bin/wp}} config get table_prefix" ) );
+	$pattern = $prefix . $siteId . '_*';
+
+	// `wp db tables <glob>` needs --all-tables to match beyond the base prefix scope; default (list)
+	// output is one table per line. --scope defaults are irrelevant once an explicit glob is given.
+	$out    = (string) run( 'cd {{current_path}} && {{bin/wp}} db tables ' . escapeshellarg( $pattern ) . ' --all-tables' );
+	$tables = array_values( array_filter( array_map( 'trim', preg_split( '/\s+/', $out ) ?: [] ) ) );
+
+	return [ $pattern, $tables ];
 }
 
 /**
